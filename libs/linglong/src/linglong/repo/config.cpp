@@ -40,7 +40,7 @@ utils::error::Result<api::types::v1::RepoConfigV2> loadConfig(const QString &fil
 
         auto repoExists =
           std::any_of(config->repos.begin(), config->repos.end(), [&config](const auto &repo) {
-              return repo.alias == config->defaultRepo;
+              return repo.alias.value_or(repo.name) == config->defaultRepo;
           });
 
         if (!repoExists) {
@@ -79,7 +79,7 @@ utils::error::Result<void> saveConfig(const api::types::v1::RepoConfigV2 &cfg,
     try {
         auto defaultRepoExists =
           std::any_of(cfg.repos.begin(), cfg.repos.end(), [&cfg](const auto &repo) {
-              return repo.alias == cfg.defaultRepo;
+              return repo.alias.value_or(repo.name) == cfg.defaultRepo;
           });
 
         if (!defaultRepoExists) {
@@ -104,7 +104,7 @@ std::string getDefaultRepoUrl(const api::types::v1::RepoConfigV2 &cfg) noexcept
 {
     const auto &defaultRepo =
       std::find_if(cfg.repos.begin(), cfg.repos.end(), [&cfg](const auto &repo) {
-          return repo.alias == cfg.defaultRepo;
+          return repo.alias.value_or(repo.name) == cfg.defaultRepo;
       });
 
     return defaultRepo->url;
@@ -119,7 +119,6 @@ api::types::v1::RepoConfigV2 convertToV2(const api::types::v1::RepoConfig &cfg) 
     for (const auto &[name, url] : cfg.repos) {
         api::types::v1::Repo repoV2;
         repoV2.name = name;
-        repoV2.alias = name;
         repoV2.url = url;
         configV2.repos.push_back(repoV2);
     }

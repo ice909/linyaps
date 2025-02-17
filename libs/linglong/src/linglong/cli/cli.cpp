@@ -1883,17 +1883,24 @@ int Cli::repo(CLI::App *app)
               LINGLONG_ERRV(QString{ "repo " } + alias.c_str() + " already exist."));
             return -1;
         }
-        cfgRef.repos.push_back(api::types::v1::Repo{
-          .alias = alias,
-          .name = name,
-          .url = url,
-        });
+        if (!options.repoOptions.repoAlias) {
+            cfgRef.repos.push_back(api::types::v1::Repo{
+              .name = name,
+              .url = url,
+            });
+        } else {
+            cfgRef.repos.push_back(api::types::v1::Repo{
+              .alias = alias,
+              .name = name,
+              .url = url,
+            });
+        }
         return this->setRepoConfig(utils::serialize::toQVariantMap(cfgRef));
     }
 
     auto existingRepo =
       std::find_if(cfgRef.repos.begin(), cfgRef.repos.end(), [&alias](const auto &repo) {
-          return repo.alias == alias;
+          return repo.alias.value_or(repo.name) == alias;
       });
 
     if (existingRepo == cfgRef.repos.end()) {

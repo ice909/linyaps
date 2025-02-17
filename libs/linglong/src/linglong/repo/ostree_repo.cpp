@@ -929,7 +929,7 @@ OSTreeRepo::importLayerDir(const package::LayerDir &dir,
     std::string remoteURL;
     const auto &repo =
       std::find_if(this->cfg.repos.begin(), this->cfg.repos.end(), [&remoteRepo](const auto &repo) {
-          return repo.alias == remoteRepo;
+          return repo.alias.value_or(repo.name) == remoteRepo;
       });
 
     remoteURL = repo->url;
@@ -1431,11 +1431,11 @@ OSTreeRepo::listRemote(const package::FuzzyReference &fuzzyRef) const noexcept
     if (req.app_id == nullptr) {
         return LINGLONG_ERR(QString{ "strndup app_id failed: %1" }.arg(fuzzyRef.id));
     }
-
-    req.repo_name = ::strndup(this->cfg.defaultRepo.data(), this->cfg.defaultRepo.size());
+    const auto defaultRepo = getDefaultRepo(this->cfg);
+    req.repo_name = ::strndup(defaultRepo.name.data(), defaultRepo.name.size());
     if (req.repo_name == nullptr) {
         return LINGLONG_ERR(
-          QString{ "strndup repo_name failed: %1" }.arg(this->cfg.defaultRepo.c_str()));
+          QString{ "strndup repo_name failed: %1" }.arg(defaultRepo.name.c_str()));
     }
 
     if (fuzzyRef.channel) {
