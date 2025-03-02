@@ -24,7 +24,6 @@
 #include "linglong/utils/transaction.h"
 #include "ocppi/runtime/RunOption.hpp"
 
-#include <QDBusInterface>
 #include <QDBusReply>
 #include <QDBusUnixFileDescriptor>
 #include <QDebug>
@@ -1210,6 +1209,8 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
     auto remoteRef = *remoteRefRet;
     additionalMessage.remoteRef = remoteRef.toString().toStdString();
 
+    qDebug() << "clearReference remoteRef: " << remoteRef.toString();
+
     // 如果远程版本大于本地版本就升级，否则需要加--force降级，如果本地没有则直接安装，如果本地版本和远程版本相等就提示已安装
     auto msgType = api::types::v1::InteractionMessageType::Install;
     if (!additionalMessage.localRef.empty()) {
@@ -1229,11 +1230,13 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
     }
 
     const auto defaultRepo = linglong::repo::getDefaultRepo(this->repo.getConfig());
-    auto refSpec = QString{ "%1:%2/%3/%4/%5" }.arg(QString::fromStdString(defaultRepo.name),
+    auto refSpec = QString{ "%1:%2/%3/%4/%5" }.arg(QString::fromStdString(remoteRef.repo.alias.value_or(remoteRef.repo.name)),
                                                    remoteRef.channel,
                                                    remoteRef.id,
                                                    remoteRef.arch.toString(),
                                                    QString::fromStdString(curModule));
+
+    qDebug() << refSpec;
     // Note: do not capture any reference of variable which defined in this func.
     // it will be a dangling reference.
     auto installer = [this,
@@ -1316,6 +1319,9 @@ void PackageManager::Install(PackageTask &taskContext,
                                   + QString::fromStdString(list));
         return;
     }
+    for(const auto module: *installModules) {
+        qWarning() << module.c_str();
+    }
     transaction.addRollBack([this, &newRef, installModules = *installModules]() noexcept {
         auto tmp = PackageTask::createTemporaryTask();
         UninstallRef(tmp, newRef, installModules);
@@ -1331,10 +1337,14 @@ void PackageManager::Install(PackageTask &taskContext,
     taskContext.updateSubState(linglong::api::types::v1::SubState::PostAction,
                                "processing after install");
 
+    qDebug() << "\033[33m" << "merge Modules!" << "\033[0m";
+
     auto mergeRet = this->repo.mergeModules();
     if (!mergeRet) {
         qCritical() << "merge modules failed: " << mergeRet.error().message();
     }
+
+    qDebug() << "\033[32m" << "merge modules done" << "\033[0m";
 
     auto layer = this->repo.getLayerItem(newRef);
     if (!layer) {
@@ -1446,6 +1456,7 @@ void PackageManager::InstallRef(PackageTask &taskContext,
     }
 
     for (const auto &module : modules) {
+        qWarning() << "\033[33m" << "pull module: " << module.c_str() << "\033[0m";
         if (isTaskDone(taskContext.subState())) {
             return;
         }
@@ -1480,6 +1491,8 @@ void PackageManager::InstallRef(PackageTask &taskContext,
                                     LINGLONG_ERRV(info).message());
             return;
         }
+
+        qDebug() << "\033[33m" << "pull Dependency: " << info->runtime.value_or("no set runtime").c_str() << "\033[0m";
 
         // Note: Do not set module by app's module here
         pullDependency(taskContext, *info, "binary");
@@ -1890,8 +1903,11 @@ void PackageManager::pullDependency(PackageTask &taskContext,
             return;
         }
 
+        qDebug() << "\033[33m" << "find runtime: " << runtime->toString() << " in : " << QString::fromStdString(runtime->repo.alias.value_or(runtime->repo.name)) << "\033[0m";
+
         // 如果runtime已存在，则直接使用, 否则从远程拉取
         auto runtimeLayerDir = repo.getLayerDir(*runtime);
+        qDebug() << "\033[33m" << "runtime 是否存在："<< runtimeLayerDir.has_value() << "\033[0m";
         if (!runtimeLayerDir) {
             if (isTaskDone(taskContext.subState())) {
                 return;
@@ -1899,7 +1915,7 @@ void PackageManager::pullDependency(PackageTask &taskContext,
 
             taskContext.updateSubState(linglong::api::types::v1::SubState::InstallRuntime,
                                        "Installing runtime " + runtime->toString());
-
+            qDebug() << runtime->repo.alias.value_or(runtime->repo.name).c_str();
             this->repo.pull(taskContext, *runtime, module);
             if (isTaskDone(taskContext.subState())) {
                 return;

@@ -117,7 +117,7 @@ void linglong_message_handler(QtMsgType type,
 void applicationInitialize(bool appForceStderrLogging)
 {
     QCoreApplication::setOrganizationName("deepin");
-    QLoggingCategory::setFilterRules("*.debug=false");
+    QLoggingCategory::setFilterRules("*.debug=true");
     if (appForceStderrLogging) {
         forceStderrLogging = true;
     } else if (qEnvironmentVariableIntValue("QT_FORCE_STDERR_LOGGING")) {
