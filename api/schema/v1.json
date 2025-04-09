@@ -1014,6 +1014,10 @@
         "id": {
           "type": "string",
           "description": "id of package manager search"
+        },
+        "repo": {
+          "type": "string",
+          "description": "repo of package manager search"
         }
       }
     },
@@ -1040,12 +1044,19 @@
           "$ref": "#/$defs/CommonResult"
         }
       ],
+      "required": [
+        "repo"
+      ],
       "properties": {
         "packages": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/PackageInfoV2"
           }
+        },
+        "repo": {
+          "type": "string",
+          "description": "repo of package manager search"
         }
       }
     },

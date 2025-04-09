@@ -38,6 +38,7 @@ struct CliOptions
     std::string instance;
     std::string module;
     std::string type;
+    std::optional<std::string> repo;
     RepoOptions repoOptions;
     std::vector<std::string> commands;
     bool showDevel;
@@ -96,10 +97,12 @@ private:
     filePathMapping(const std::vector<std::string> &command) const noexcept;
     static std::string mappingFile(const std::filesystem::path &file) noexcept;
     static std::string mappingUrl(std::string_view url) noexcept;
+    static void filterPackageInfosFromType(std::vector<std::pair<std::string, api::types::v1::PackageInfoV2>> &list,
+                                           const std::string &type) noexcept;
     static void filterPackageInfosFromType(std::vector<api::types::v1::PackageInfoV2> &list,
                                            const std::string &type) noexcept;
     static utils::error::Result<void>
-    filterPackageInfosFromVersion(std::vector<api::types::v1::PackageInfoV2> &list) noexcept;
+    filterPackageInfosFromVersion(std::vector<std::pair<std::string,api::types::v1::PackageInfoV2>> &list) noexcept;
     void printProgress() noexcept;
     [[nodiscard]] utils::error::Result<std::vector<api::types::v1::CliContainer>>
     getCurrentContainers() const noexcept;

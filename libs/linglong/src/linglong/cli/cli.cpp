@@ -9,6 +9,7 @@
 #include "linglong/api/dbus/v1/dbus_peer.h"
 #include "linglong/api/types/v1/InteractionReply.hpp"
 #include "linglong/api/types/v1/InteractionRequest.hpp"
+#include "linglong/api/types/v1/PackageInfoV2.hpp"
 #include "linglong/api/types/v1/PackageManager1InstallParameters.hpp"
 #include "linglong/api/types/v1/PackageManager1JobInfo.hpp"
 #include "linglong/api/types/v1/PackageManager1Package.hpp"
@@ -1360,41 +1361,69 @@ int Cli::search([[maybe_unused]] CLI::App *subcommand)
         .id = options.appid,
     };
 
-    auto pendingReply = this->pkgMan.Search(utils::serialize::toQVariantMap(params));
-    pendingReply.waitForFinished();
+    auto repoConfig = this->repository.getConfig();
 
-    if (pendingReply.isError()) {
-        if (pendingReply.error().type() == QDBusError::AccessDenied) {
-            this->notifier->notify(
-              api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
-            return -1;
+    std::vector<std::string> targetRepos;
+    if (options.repo) {
+        targetRepos.push_back(*options.repo);
+    } else {
+        for (const auto &repo : repoConfig.repos) {
+            targetRepos.push_back(repo.alias.value_or(repo.name));
         }
-
-        auto err = LINGLONG_ERRV(pendingReply.error().message());
-        this->printer.printErr(err);
-        return -1;
-    }
-
-    auto result = utils::serialize::fromQVariantMap<api::types::v1::PackageManager1JobInfo>(
-      pendingReply.value());
-    if (!result) {
-        this->printer.printErr(result.error());
-        return -1;
-    }
-
-    if (!result->id) {
-        this->printer.printErr(
-          LINGLONG_ERRV("\n" + QString::fromStdString(result->message), result->code));
-        return -1;
     }
 
     QEventLoop loop;
+    int remainingRepos = targetRepos.size();
+    // 使用 map 存储仓库名与包信息的对应关系
+    std::vector<std::pair<std::string, api::types::v1::PackageInfoV2>> allPackages;
+    std::vector<std::pair<std::string, QDBusPendingReply<QVariantMap>>> pendingSearches;
+
+    for (const auto &repoName : targetRepos) {
+        params.repo = repoName;
+        auto pendingReply = this->pkgMan.Search(utils::serialize::toQVariantMap(params));
+
+        // 等待DBus调用完成以获取jobID
+        pendingReply.waitForFinished();
+        if (pendingReply.isError()) {
+            if (pendingReply.error().type() == QDBusError::AccessDenied) {
+                this->notifier->notify(
+                  api::types::v1::InteractionRequest{ .summary = permissionNotifyMsg });
+                return -1;
+            }
+
+            auto err = LINGLONG_ERRV(pendingReply.error().message());
+            this->printer.printErr(err);
+            return -1;
+        }
+
+        auto result = utils::serialize::fromQVariantMap<api::types::v1::PackageManager1JobInfo>(
+          pendingReply.value());
+        if (!result) {
+            this->printer.printErr(result.error());
+            return -1;
+        }
+
+        if (!result->id) {
+            this->printer.printErr(
+              LINGLONG_ERRV("\n" + QString::fromStdString(result->message), result->code));
+            return -1;
+        }
+
+        pendingSearches.emplace_back(*result->id, pendingReply);
+    }
 
     connect(&this->pkgMan,
             &api::dbus::v1::PackageManager::SearchFinished,
             [&](const QString &jobID, const QVariantMap &data) {
                 // Note: once an error occurs, remember to return after exiting the loop.
-                if (result->id->c_str() != jobID) {
+                bool isOurSearch = false;
+                for (const auto &search : pendingSearches) {
+                    if (search.first == jobID.toStdString()) {
+                        isOurSearch = true;
+                        break;
+                    }
+                }
+                if (!isOurSearch) {
                     return;
                 }
                 auto result =
@@ -1418,28 +1447,32 @@ int Cli::search([[maybe_unused]] CLI::App *subcommand)
                     loop.exit(0);
                     return;
                 }
-
-                auto pkgs = std::move(result->packages).value();
-                if (!options.showDevel) {
-                    auto it = std::remove_if(pkgs.begin(),
-                                             pkgs.end(),
-                                             [](const api::types::v1::PackageInfoV2 &info) {
-                                                 return info.packageInfoV2Module == "develop";
-                                             });
-                    pkgs.erase(it, pkgs.end());
+                
+                for (auto& pkg : result->packages.value()) {
+                        allPackages.push_back({result->repo, std::move(pkg)});
                 }
 
-                if (!options.type.empty()) {
-                    filterPackageInfosFromType(pkgs, options.type);
+                if (--remainingRepos == 0) {
+                    if (!options.showDevel) {
+                        auto it = std::remove_if(allPackages.begin(),
+                                                 allPackages.end(),
+                                                 [](const std::pair<std::string, api::types::v1::PackageInfoV2> &item) {
+                                                     return item.second.packageInfoV2Module == "develop";
+                                                 });
+                        allPackages.erase(it, allPackages.end());
+                    }
+    
+                    if (!options.type.empty()) {
+                        filterPackageInfosFromType(allPackages, options.type);
+                    }
+    
+                    // default only the latest version is displayed
+                    if (!options.showAll) {
+                        filterPackageInfosFromVersion(allPackages);
+                    }
+                    this->printer.printSearchResult(allPackages);
+                    loop.exit(0);
                 }
-
-                // default only the latest version is displayed
-                if (!options.showAll) {
-                    filterPackageInfosFromVersion(pkgs);
-                }
-
-                this->printer.printPackages(pkgs);
-                loop.exit(0);
             });
     return loop.exec();
 }
@@ -2167,6 +2200,27 @@ Cli::filePathMapping(const std::vector<std::string> &command) const noexcept
     return execArgs;
 }
 
+void Cli::filterPackageInfosFromType(std::vector<std::pair<std::string,api::types::v1::PackageInfoV2>> &list,
+                                     const std::string &type) noexcept
+{
+    // if type is all, do nothing, return app of all packages.
+    if (type == "all") {
+        return;
+    }
+
+    std::vector<std::pair<std::string,api::types::v1::PackageInfoV2>> temp;
+
+    // if type is runtime or app, return app of specific type.
+    for (const auto &item : list) {
+        if (item.second.kind == type) {
+            temp.push_back(item);
+        }
+    }
+
+    list.clear();
+    std::move(temp.begin(), temp.end(), std::back_inserter(list));
+}
+
 void Cli::filterPackageInfosFromType(std::vector<api::types::v1::PackageInfoV2> &list,
                                      const std::string &type) noexcept
 {
@@ -2189,16 +2243,16 @@ void Cli::filterPackageInfosFromType(std::vector<api::types::v1::PackageInfoV2> 
 }
 
 utils::error::Result<void>
-Cli::filterPackageInfosFromVersion(std::vector<api::types::v1::PackageInfoV2> &list) noexcept
+Cli::filterPackageInfosFromVersion(std::vector<std::pair<std::string,api::types::v1::PackageInfoV2>> &list) noexcept
 {
     LINGLONG_TRACE("filter package infos from version");
 
-    std::unordered_map<std::string, api::types::v1::PackageInfoV2> temp;
+    std::unordered_map<std::string, std::pair<std::string,api::types::v1::PackageInfoV2>> temp;
 
     for (const auto &info : list) {
         auto key = QString("%1-%2")
-                     .arg(QString::fromStdString(info.id))
-                     .arg(QString::fromStdString(info.packageInfoV2Module))
+                     .arg(QString::fromStdString(info.second.id))
+                     .arg(QString::fromStdString(info.second.packageInfoV2Module))
                      .toStdString();
         auto it = temp.find(key);
         if (it == temp.end()) {
@@ -2206,11 +2260,11 @@ Cli::filterPackageInfosFromVersion(std::vector<api::types::v1::PackageInfoV2> &l
             continue;
         }
 
-        auto oldVersion = package::Version::parse(QString::fromStdString(it->second.version));
+        auto oldVersion = package::Version::parse(QString::fromStdString(it->second.second.version));
         if (!oldVersion) {
             return LINGLONG_ERR("failed to parse old version", oldVersion.error());
         }
-        auto newVersion = package::Version::parse(QString::fromStdString(info.version));
+        auto newVersion = package::Version::parse(QString::fromStdString(info.second.version));
         if (!newVersion) {
             return LINGLONG_ERR("failed to parse new version", newVersion.error());
         }

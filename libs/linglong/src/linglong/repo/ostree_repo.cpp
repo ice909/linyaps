@@ -755,8 +755,11 @@ OSTreeRepo::OSTreeRepo(const QDir &path,
     this->cache = std::move(ret).value();
 }
 
-const api::types::v1::RepoConfigV2 &OSTreeRepo::getConfig() const noexcept
+const api::types::v1::RepoConfigV2 &OSTreeRepo::getConfig() noexcept
 {
+    std::sort(cfg.repos.begin(), cfg.repos.end(), [](const auto &repo1, const auto &repo2) {
+        return repo1.priority > repo2.priority;
+    });
     return cfg;
 }
 
@@ -1396,10 +1399,14 @@ OSTreeRepo::listLocalLatest() const noexcept
 }
 
 utils::error::Result<std::vector<api::types::v1::PackageInfoV2>>
-OSTreeRepo::listRemote(const package::FuzzyReference &fuzzyRef) const noexcept
+OSTreeRepo::listRemote(const package::FuzzyReference &fuzzyRef, const std::optional<api::types::v1::Repo> &repo) const noexcept
 {
     LINGLONG_TRACE("list remote references");
 
+    if (repo) {
+        m_clientFactory.setServer(repo->url);
+    }
+    
     auto client = m_clientFactory.createClientV2();
     request_fuzzy_search_req_t req{ nullptr, nullptr, nullptr, nullptr, nullptr };
     auto freeIfNotNull = utils::finally::finally([&req] {
@@ -1426,7 +1433,11 @@ OSTreeRepo::listRemote(const package::FuzzyReference &fuzzyRef) const noexcept
         return LINGLONG_ERR(QString{ "strndup app_id failed: %1" }.arg(fuzzyRef.id));
     }
     const auto defaultRepo = getDefaultRepo(this->cfg);
-    req.repo_name = ::strndup(defaultRepo.name.data(), defaultRepo.name.size());
+    if (!repo) {
+        req.repo_name = ::strndup(defaultRepo.name.data(), defaultRepo.name.size());
+    }else {
+        req.repo_name = ::strndup(repo->name.data(), repo->name.size());
+    }
     if (req.repo_name == nullptr) {
         return LINGLONG_ERR(
           QString{ "strndup repo_name failed: %1" }.arg(defaultRepo.name.c_str()));
@@ -1521,6 +1532,8 @@ OSTreeRepo::listRemote(const package::FuzzyReference &fuzzyRef) const noexcept
           .version = item->version,
         });
     }
+    
+    m_clientFactory.setServer(defaultRepo.url);
 
     return pkgInfos;
 }

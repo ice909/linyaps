@@ -39,6 +39,10 @@ using nlohmann::json;
 struct PackageManager1SearchResult {
 std::optional<std::vector<PackageInfoV2>> packages;
 /**
+* repo of package manager search
+*/
+std::string repo;
+/**
 * We do not use DBus error. We return an error code instead. Non-zero code indicated errors
 * occurs and message should be displayed to user.
 */

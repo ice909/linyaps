@@ -8,7 +8,9 @@
 
 #include "linglong/api/types/helper.h"
 #include "linglong/api/types/v1/Generators.hpp"
+#include "linglong/api/types/v1/PackageInfoV2.hpp"
 #include "linglong/api/types/v1/PackageManager1JobInfo.hpp"
+#include "linglong/api/types/v1/Repo.hpp"
 #include "linglong/api/types/v1/State.hpp"
 #include "linglong/package/layer_file.h"
 #include "linglong/package/layer_packager.h"
@@ -1834,20 +1836,39 @@ auto PackageManager::Search(const QVariantMap &parameters) noexcept -> QVariantM
         return toDBusReply(fuzzyRef);
     }
     auto jobID = QUuid::createUuid().toString();
-    auto ref = *fuzzyRef;
-    m_search_queue.runTask([this, jobID, ref]() {
-        auto pkgInfos = this->repo.listRemote(ref);
+    auto repoConfig = this->repo.getConfig();
+    api::types::v1::Repo searchRepo;
+    if (!paras->repo) {
+        searchRepo = repo::getDefaultRepo(repoConfig);
+    } else {
+        auto it = std::find_if(repoConfig.repos.begin(),
+                               repoConfig.repos.end(),
+                               [&paras](const linglong::api::types::v1::Repo &repo) {
+                                   return repo.alias.value_or(repo.name) == paras->repo.value();
+                               });
+
+        if (it == repoConfig.repos.end()) {
+            return toDBusReply(-1, QString("repo %1 not found").arg(paras->repo.value().c_str()));
+        }
+        
+        searchRepo = *it;
+    }
+
+    m_search_queue.runTask([this, jobID, ref = std::move(*fuzzyRef), repo = std::move(searchRepo)]() {
+        auto pkgInfos = this->repo.listRemote(ref, repo);
         if (!pkgInfos.has_value()) {
             qWarning() << "list remote failed: " << pkgInfos.error().message();
             Q_EMIT this->SearchFinished(jobID, toDBusReply(pkgInfos));
             return;
         }
-        auto result = api::types::v1::PackageManager1SearchResult{
+        Q_EMIT this->SearchFinished(
+          jobID,
+          utils::serialize::toQVariantMap(api::types::v1::PackageManager1SearchResult{
             .packages = *pkgInfos,
+            .repo = repo.alias.value_or(repo.name),
             .code = 0,
             .message = "",
-        };
-        Q_EMIT this->SearchFinished(jobID, utils::serialize::toQVariantMap(result));
+          }));
     });
     auto result = utils::serialize::toQVariantMap(api::types::v1::PackageManager1JobInfo{
       .id = jobID.toStdString(),
