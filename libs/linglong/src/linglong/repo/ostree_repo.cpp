@@ -10,6 +10,7 @@
 #include "linglong/api/types/v1/ExportDirs.hpp"
 #include "linglong/api/types/v1/Generators.hpp"
 #include "linglong/api/types/v1/PackageInfoV2.hpp"
+#include "linglong/api/types/v1/Repo.hpp"
 #include "linglong/api/types/v1/RepositoryCacheLayersItem.hpp"
 #include "linglong/api/types/v1/RepositoryCacheMergedItem.hpp"
 #include "linglong/package/fuzzy_reference.h"
@@ -1111,7 +1112,8 @@ utils::error::Result<void> OSTreeRepo::prune()
 
 void OSTreeRepo::pull(service::PackageTask &taskContext,
                       const package::Reference &reference,
-                      const std::string &module) noexcept
+                      const std::string &module,
+                      const std::optional<api::types::v1::Repo> &repo) noexcept
 {
     // Note: if module is runtime, refString will be channel:id/version/binary.
     // because we need considering update channel:id/version/runtime to channel:id/version/binary.
@@ -1143,14 +1145,16 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
 
     g_autoptr(GVariant) pull_options = g_variant_ref_sink(g_variant_builder_end(&builder));
     // 这里不能使用g_main_context_push_thread_default，因为会阻塞Qt的事件循环
-    const auto defaultRepo = getDefaultRepo(this->cfg);
-    auto status =
-      ostree_repo_pull_with_options(this->ostreeRepo.get(),
-                                    defaultRepo.alias.value_or(defaultRepo.name).c_str(),
-                                    pull_options,
-                                    progress,
-                                    cancellable,
-                                    &gErr);
+    api::types::v1::Repo pullRepo = getDefaultRepo(this->cfg);
+    if (repo.has_value()) {
+        pullRepo = repo.value();
+    }
+    auto status = ostree_repo_pull_with_options(this->ostreeRepo.get(),
+                                                pullRepo.alias.value_or(pullRepo.name).c_str(),
+                                                pull_options,
+                                                progress,
+                                                cancellable,
+                                                &gErr);
     ostree_async_progress_finish(progress);
     auto shouldFallback = false;
     if (status == FALSE) {
@@ -1188,7 +1192,7 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
         g_autoptr(GVariant) pull_options = g_variant_ref_sink(g_variant_builder_end(&builder));
 
         status = ostree_repo_pull_with_options(this->ostreeRepo.get(),
-                                               defaultRepo.alias.value_or(defaultRepo.name).c_str(),
+                                               pullRepo.alias.value_or(pullRepo.name).c_str(),
                                                pull_options,
                                                progress,
                                                cancellable,
@@ -1225,7 +1229,7 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
 
     item.commit = commit;
     item.info = *info;
-    item.repo = defaultRepo.alias.value_or(defaultRepo.name);
+    item.repo = pullRepo.alias.value_or(pullRepo.name);
 
     auto layerDir = this->ensureEmptyLayerDir(item.commit);
     if (!layerDir) {
@@ -1245,7 +1249,8 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
 utils::error::Result<package::Reference>
 OSTreeRepo::clearReference(const package::FuzzyReference &fuzzy,
                            const clearReferenceOption &opts,
-                           const std::string &module) const noexcept
+                           const std::string &module,
+                           const std::optional<api::types::v1::Repo> &repo) const noexcept
 {
     LINGLONG_TRACE("clear fuzzy reference " + fuzzy.toString());
 
@@ -1264,8 +1269,15 @@ OSTreeRepo::clearReference(const package::FuzzyReference &fuzzy,
         qInfo() << reference.error();
         qInfo() << "fallback to Remote";
     }
+    
+    utils::error::Result<std::vector<api::types::v1::PackageInfoV2>> list;
 
-    auto list = this->listRemote(fuzzy);
+    if (repo) {
+        list = this->listRemote(fuzzy,repo.value());
+    }else {
+        list = this->listRemote(fuzzy);
+    }
+    
     if (!list.has_value()) {
         return LINGLONG_ERR("get ref list from remote", list);
     }
@@ -2121,16 +2133,22 @@ auto OSTreeRepo::getLayerDir(const package::Reference &ref,
 }
 
 // get all module list
-utils::error::Result<std::vector<std::string>> OSTreeRepo::getRemoteModuleList(
-  const package::Reference &ref,
-  const std::optional<std::vector<std::string>> &filter) const noexcept
+utils::error::Result<std::vector<std::string>>
+OSTreeRepo::getRemoteModuleList(const package::Reference &ref,
+                                const std::optional<std::vector<std::string>> &filter,
+                                const std::optional<api::types::v1::Repo> &repo) const noexcept
 {
     LINGLONG_TRACE("get remote module list");
     auto fuzzy = package::FuzzyReference::create(ref.channel, ref.id, ref.version, ref.arch);
     if (!fuzzy.has_value()) {
         return LINGLONG_ERR("create fuzzy reference", fuzzy);
     }
-    auto list = this->listRemote(*fuzzy);
+    utils::error::Result<std::vector<api::types::v1::PackageInfoV2>> list;
+    if (repo.has_value()) {
+        list = listRemote(*fuzzy, *repo);
+    } else {
+        list = listRemote(*fuzzy);
+    }
     if (!list.has_value()) {
         return LINGLONG_ERR("list remote reference", fuzzy);
     }
@@ -2758,6 +2776,27 @@ utils::error::Result<void> OSTreeRepo::IniLikeFileRewrite(const QFileInfo &info,
     }
 
     return LINGLONG_OK;
+}
+
+utils::error::Result<package::Reference>
+OSTreeRepo::getReferenceByPriorityFromRemote(const package::FuzzyReference &fuzzyRef,
+                                             const clearReferenceOption &opts,
+                                             api::types::v1::Repo &foundRepo,
+                                             const std::string &module) noexcept
+{
+    LINGLONG_TRACE("get ref by priority form remote")
+    const auto cfg = this->getConfig();
+    for (const auto &repo : cfg.repos) {
+        auto remoteRefRet = this->clearReference(fuzzyRef, opts, module, repo);
+        if (remoteRefRet) {
+            foundRepo = repo;
+            return remoteRefRet;
+        }
+    }
+    auto msg = QString("not found ref:%1 module:%2 from remote repo")
+                 .arg(fuzzyRef.toString())
+                 .arg(module.c_str());
+    return LINGLONG_ERR(msg);
 }
 
 OSTreeRepo::~OSTreeRepo() = default;

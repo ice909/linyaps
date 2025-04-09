@@ -68,12 +68,14 @@ public:
 
     void pull(service::PackageTask &taskContext,
               const package::Reference &reference,
-              const std::string &module = "binary") noexcept;
+              const std::string &module = "binary",
+              const std::optional<api::types::v1::Repo> &repo = std::nullopt) noexcept;
 
     [[nodiscard]] utils::error::Result<package::Reference>
     clearReference(const package::FuzzyReference &fuzz,
                    const clearReferenceOption &opts,
-                   const std::string &module = "binary") const noexcept;
+                   const std::string &module = "binary",
+                   const std::optional<api::types::v1::Repo> &repo = std::nullopt) const noexcept;
 
     utils::error::Result<std::vector<api::types::v1::PackageInfoV2>> listLocal() const noexcept;
     utils::error::Result<std::vector<api::types::v1::PackageInfoV2>>
@@ -114,13 +116,19 @@ public:
     std::vector<std::string> getModuleList(const package::Reference &ref) noexcept;
     [[nodiscard]] utils::error::Result<std::vector<std::string>>
     getRemoteModuleList(const package::Reference &ref,
-                        const std::optional<std::vector<std::string>> &filter) const noexcept;
+                        const std::optional<std::vector<std::string>> &filter,
+                        const std::optional<api::types::v1::Repo> &repo = std::nullopt) const noexcept;
 
     [[nodiscard]] utils::error::Result<api::types::v1::RepositoryCacheLayersItem>
     getLayerItem(const package::Reference &ref,
                  std::string module = "binary",
                  const std::optional<std::string> &subRef = std::nullopt) const noexcept;
     utils::error::Result<void> fixExportAllEntries() noexcept;
+    utils::error::Result<package::Reference>
+    getReferenceByPriorityFromRemote(const package::FuzzyReference &fuzzyRef,
+                                     const clearReferenceOption &opts,
+                                     api::types::v1::Repo &repo,
+                                     const std::string &module = "binary") noexcept;
 
 private:
     api::types::v1::RepoConfigV2 cfg;

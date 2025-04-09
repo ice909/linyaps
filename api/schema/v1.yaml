@@ -731,6 +731,9 @@ $defs:
               type: string
       options:
         $ref: '#/$defs/CommonOptions'
+      repo:
+        type: string
+        description: repo of package manager install
   PackageManager1PackageTaskResult:
     description: package manager task result
     allOf:

@@ -1125,6 +1125,10 @@ int Cli::install([[maybe_unused]] CLI::App *subcommand)
                                                                      .skipInteraction = false } };
     params.options.force = options.forceOpt;
     params.options.skipInteraction = options.confirmOpt;
+    
+    if (options.repo) {
+        params.repo = options.repo;
+    }
 
     auto app = QString::fromStdString(options.appid);
     QFileInfo info(app);

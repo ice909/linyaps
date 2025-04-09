@@ -8,6 +8,7 @@
 
 #include "linglong/api/types/v1/CommonOptions.hpp"
 #include "linglong/api/types/v1/ContainerProcessStateInfo.hpp"
+#include "linglong/api/types/v1/Repo.hpp"
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/container_builder.h"
 #include "package_task.h"
@@ -117,10 +118,12 @@ private:
     void Install(PackageTask &taskContext,
                  const package::Reference &newRef,
                  std::optional<package::Reference> oldRef,
-                 const std::vector<std::string> &modules) noexcept;
+                 const std::vector<std::string> &modules,
+                 const api::types::v1::Repo &repo) noexcept;
     void InstallRef(PackageTask &taskContext,
                     const package::Reference &ref,
-                    std::vector<std::string> modules) noexcept;
+                    std::vector<std::string> modules,
+                    const api::types::v1::Repo &repo) noexcept;
     void UninstallRef(PackageTask &taskContext,
                       const package::Reference &ref,
                       const std::vector<std::string> &modules) noexcept;
@@ -148,6 +151,7 @@ private:
     utils::error::Result<void> generateCache(const package::Reference &ref) noexcept;
     utils::error::Result<void> tryGenerateCache(const package::Reference &ref) noexcept;
     utils::error::Result<void> removeCache(const package::Reference &ref) noexcept;
+    utils::error::Result<api::types::v1::Repo> getLocalRefRepo(const package::Reference &ref) noexcept;
     linglong::repo::OSTreeRepo &repo; // NOLINT
     PackageTaskQueue tasks;
 

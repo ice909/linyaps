@@ -20,6 +20,7 @@
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/utils/command/env.h"
 #include "linglong/utils/configure.h"
+#include "linglong/utils/error/error.h"
 #include "linglong/utils/finally/finally.h"
 #include "linglong/utils/packageinfo_handler.h"
 #include "linglong/utils/serialize/json.h"
@@ -1110,6 +1111,7 @@ auto PackageManager::InstallFromFile(const QDBusUnixFileDescriptor &fd,
 
 auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariantMap
 {
+    LINGLONG_TRACE("install app")
     auto paras =
       utils::serialize::fromQVariantMap<api::types::v1::PackageManager1InstallParameters>(
         parameters);
@@ -1146,7 +1148,7 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
 
         auto ret = tasks.addNewTask(
           { fuzzyRef->toString() },
-          [this, curModule, fuzzyRef = std::move(*fuzzyRef)](PackageTask &taskRef) {
+          [this, curModule, fuzzyRef = std::move(*fuzzyRef), paras = *paras](PackageTask &taskRef) {
               auto localRef = this->repo.clearReference(fuzzyRef, { .fallbackToRemote = false });
               if (!localRef.has_value()) {
                   taskRef.updateState(api::types::v1::State::Failed,
@@ -1158,7 +1160,17 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
                   taskRef.updateState(api::types::v1::State::Failed, "module is already installed");
                   return;
               }
-              this->Install(taskRef, *localRef, std::nullopt, std::vector{ curModule });
+
+              auto localRefRepo = this->getLocalRefRepo(*localRef);
+              if (!localRefRepo) {
+                  taskRef.updateState(api::types::v1::State::Failed, "repo not found");
+                  return;
+              }
+              this->Install(taskRef,
+                            *localRef,
+                            std::nullopt,
+                            std::vector{ curModule },
+                            *localRefRepo);
           },
           connection());
         if (!ret) {
@@ -1202,11 +1214,35 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
         additionalMessage.localRef = localRef->toString().toStdString();
     }
 
-    auto remoteRefRet = this->repo.clearReference(*fuzzyRef,
-                                                  {
-                                                    .forceRemote = true // NOLINT
-                                                  },
-                                                  curModule);
+    utils::error::Result<package::Reference> remoteRefRet =
+      LINGLONG_ERR(QString("not found ref:%1 module:%2 from remote repo")
+                     .arg(fuzzyRef->toString())
+                     .arg(curModule.c_str()));
+    const auto repoCfg = this->repo.getConfig();
+    api::types::v1::Repo remoteRefRepo = repo::getDefaultRepo(repoCfg);
+    if (paras->repo) {
+        auto it = std::find_if(repoCfg.repos.begin(), repoCfg.repos.end(), [&](const api::types::v1::Repo& repo) {
+            return repo.name == paras->repo.value();
+        });
+        
+        if (it == repoCfg.repos.end()) {
+            return toDBusReply(-1,QString("repo not found: %1").arg(paras->repo.value().c_str()));
+        }
+        
+        remoteRefRet = this->repo.clearReference(*fuzzyRef,
+                                                 {
+                                                   .forceRemote = true // NOLINT
+                                                 },
+                                                 curModule,
+                                                 *it);
+    } else {
+        remoteRefRet = this->repo.getReferenceByPriorityFromRemote(*fuzzyRef,
+                                                                   {
+                                                                     .forceRemote = true // NOLINT
+                                                                   },
+                                                                   remoteRefRepo,
+                                                                   curModule);
+    }
     if (!remoteRefRet) {
         return toDBusReply(remoteRefRet);
     }
@@ -1231,8 +1267,7 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
         }
     }
 
-    const auto defaultRepo = linglong::repo::getDefaultRepo(this->repo.getConfig());
-    auto refSpec = QString{ "%1:%2/%3/%4/%5" }.arg(QString::fromStdString(defaultRepo.name),
+    auto refSpec = QString{ "%1:%2/%3/%4/%5" }.arg(QString::fromStdString(remoteRefRepo.name),
                                                    remoteRef.channel,
                                                    remoteRef.id,
                                                    remoteRef.arch.toString(),
@@ -1248,7 +1283,8 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
                       modules,
                       skipInteraction = paras->options.skipInteraction,
                       msgType,
-                      additionalMessage](PackageTask &taskRef) {
+                      additionalMessage,
+                      remoteRefRepo](PackageTask &taskRef) {
         // 升级需要用户交互
         if (msgType == api::types::v1::InteractionMessageType::Upgrade && !skipInteraction) {
             Q_EMIT RequestInteraction(QDBusObjectPath(taskRef.taskObjectPath()),
@@ -1279,7 +1315,8 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
         this->Install(taskRef,
                       remoteRef,
                       localRef,
-                      localRef.has_value() ? this->repo.getModuleList(*localRef) : modules);
+                      localRef.has_value() ? this->repo.getModuleList(*localRef) : modules,
+                      remoteRefRepo);
     };
 
     auto taskRet = tasks.addNewTask({ refSpec }, std::move(installer), connection());
@@ -1300,14 +1337,15 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
 void PackageManager::Install(PackageTask &taskContext,
                              const package::Reference &newRef,
                              std::optional<package::Reference> oldRef,
-                             const std::vector<std::string> &modules) noexcept
+                             const std::vector<std::string> &modules,
+                             const api::types::v1::Repo &repo) noexcept
 {
     taskContext.updateState(linglong::api::types::v1::State::Processing,
                             "Installing " + newRef.toString());
 
     utils::Transaction transaction;
     // 仅安装远程存在的modules
-    auto installModules = this->repo.getRemoteModuleList(newRef, modules);
+    auto installModules = this->repo.getRemoteModuleList(newRef, modules, repo);
     if (!installModules.has_value()) {
         taskContext.reportError(std::move(installModules).error());
         return;
@@ -1326,7 +1364,7 @@ void PackageManager::Install(PackageTask &taskContext,
             qCritical() << "failed to rollback install " << newRef.toString();
         }
     });
-    InstallRef(taskContext, newRef, *installModules);
+    InstallRef(taskContext, newRef, *installModules, repo);
     if (isTaskDone(taskContext.subState())) {
         return;
     }
@@ -1374,7 +1412,8 @@ void PackageManager::Install(PackageTask &taskContext,
 
 void PackageManager::InstallRef(PackageTask &taskContext,
                                 const package::Reference &ref,
-                                std::vector<std::string> modules) noexcept
+                                std::vector<std::string> modules,
+                                const api::types::v1::Repo &remoteRepo) noexcept
 {
     LINGLONG_TRACE("install " + ref.toString());
 
@@ -1453,7 +1492,7 @@ void PackageManager::InstallRef(PackageTask &taskContext,
             return;
         }
 
-        this->repo.pull(taskContext, ref, module);
+        this->repo.pull(taskContext, ref, module, remoteRepo);
         if (isTaskDone(taskContext.subState())) {
             return;
         }
@@ -1777,7 +1816,8 @@ void PackageManager::Update(PackageTask &taskContext,
                                   + QString::fromStdString(list));
         return;
     }
-    this->InstallRef(taskContext, newRef, *installModules);
+    auto repo = repo::getDefaultRepo(this->repo.getConfig());
+    this->InstallRef(taskContext, newRef, *installModules,repo);
     if (isTaskDone(taskContext.subState())) {
         return;
     }
@@ -1848,9 +1888,8 @@ auto PackageManager::Search(const QVariantMap &parameters) noexcept -> QVariantM
                                });
 
         if (it == repoConfig.repos.end()) {
-            return toDBusReply(-1, QString("repo %1 not found").arg(paras->repo.value().c_str()));
-        }
-        
+            return toDBusReply(-1, QString("repo %1 not found").arg(paras->repo.value().c_str()));        }
+
         searchRepo = *it;
     }
 
@@ -1900,12 +1939,13 @@ void PackageManager::pullDependency(PackageTask &taskContext,
                                     LINGLONG_ERRV(fuzzyRuntime).message());
             return;
         }
-
-        auto runtime = this->repo.clearReference(*fuzzyRuntime,
+        
+        auto pullRepo = repo::getDefaultRepo(this->repo.getConfig());
+        auto runtime = this->repo.getReferenceByPriorityFromRemote(*fuzzyRuntime,
                                                  {
                                                    .forceRemote = false,
                                                    .fallbackToRemote = true,
-                                                 });
+                                                 }, pullRepo);
         if (!runtime) {
             taskContext.updateState(linglong::api::types::v1::State::Failed,
                                     runtime.error().message());
@@ -1922,7 +1962,7 @@ void PackageManager::pullDependency(PackageTask &taskContext,
             taskContext.updateSubState(linglong::api::types::v1::SubState::InstallRuntime,
                                        "Installing runtime " + runtime->toString());
 
-            this->repo.pull(taskContext, *runtime, module);
+            this->repo.pull(taskContext, *runtime, module, pullRepo);
             if (isTaskDone(taskContext.subState())) {
                 return;
             }
@@ -1943,12 +1983,13 @@ void PackageManager::pullDependency(PackageTask &taskContext,
                                 LINGLONG_ERRV(fuzzyBase).message());
         return;
     }
-
-    auto base = this->repo.clearReference(*fuzzyBase,
+    
+    auto pullRepo = repo::getDefaultRepo(this->repo.getConfig());
+    auto base = this->repo.getReferenceByPriorityFromRemote(*fuzzyBase,
                                           {
                                             .forceRemote = false,
                                             .fallbackToRemote = true,
-                                          });
+                                          }, pullRepo);
     if (!base) {
         taskContext.updateState(linglong::api::types::v1::State::Failed,
                                 LINGLONG_ERRV(base).message());
@@ -1964,7 +2005,7 @@ void PackageManager::pullDependency(PackageTask &taskContext,
 
         taskContext.updateSubState(linglong::api::types::v1::SubState::InstallBase,
                                    "Installing base " + base->toString());
-        this->repo.pull(taskContext, *base, module);
+        this->repo.pull(taskContext, *base, module, pullRepo);
         if (isTaskDone(taskContext.subState())) {
             return;
         }
@@ -2407,6 +2448,30 @@ auto PackageManager::GenerateCache(const QString &reference) noexcept -> QVarian
       .message = "",
     });
     return result;
+}
+
+utils::error::Result<api::types::v1::Repo>
+PackageManager::getLocalRefRepo(const package::Reference &ref) noexcept
+{
+    LINGLONG_TRACE("get local ref repo")
+    auto layerItem = this->repo.getLayerItem(ref);
+    if (!layerItem) {
+        return LINGLONG_ERR(layerItem);
+    }
+
+    const auto repoCfg = this->repo.getConfig();
+
+    auto it = std::find_if(repoCfg.repos.begin(),
+                           repoCfg.repos.end(),
+                           [&](const api::types::v1::Repo &repo) {
+                               return repo.alias.value_or(repo.name) == layerItem->repo;
+                           });
+
+    if (it == repoCfg.repos.end()) {
+        return LINGLONG_ERR(QString{ "repo %1 not exist" }.arg(layerItem->repo.c_str()));
+    }
+
+    return *it;
 }
 
 } // namespace linglong::service

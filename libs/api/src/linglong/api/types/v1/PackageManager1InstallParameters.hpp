@@ -36,6 +36,10 @@ using nlohmann::json;
 struct PackageManager1InstallParameters {
 CommonOptions options;
 PackageManager1InstallParametersPacakge package;
+/**
+* repo of package manager install
+*/
+std::optional<std::string> repo;
 };
 }
 }

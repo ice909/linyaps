@@ -936,6 +936,10 @@
         },
         "options": {
           "$ref": "#/$defs/CommonOptions"
+        },
+        "repo": {
+          "type": "string",
+          "description": "repo of package manager install"
         }
       }
     },
