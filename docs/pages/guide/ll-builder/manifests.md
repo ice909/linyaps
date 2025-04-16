@@ -56,7 +56,7 @@ package:
 | -------------- | -------------------------------------------------------- | ---- |
 | id             | 构建产物的唯一名称 (例如：`org.deepin.calculator`)        | 是   |
 | name           | 构建产物的名称 (例如：`deepin-calculator`)               | 是   |
-| version        | 构建产物的版本，建议四位数字 (例如：`5.7.21.0`)           | 是   |
+| version        | 构建产物的版本，遵循 [SemVer](./semver.md) 规范          | 是   |
 | kind           | 构建产物的类型：`app` (应用)、`runtime` (运行时)         | 是   |
 | description    | 构建产物的详细描述                                       | 是   |
 | architecture   | 构建产物的目标架构 (例如：`amd64`, `arm64`)               | 否   |
@@ -282,7 +282,7 @@ version: '1'
 package:
   id: org.deepin.calculator
   name: deepin-calculator
-  version: 5.7.21.0
+  version: 5.7.21
   kind: app
   description: |
     calculator for deepin os.

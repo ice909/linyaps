@@ -56,7 +56,7 @@ package:
 | -------------- | --------------------------------------------------------------- | -------- |
 | id             | Unique name of the build artifact (e.g., `org.deepin.calculator`) | Yes      |
 | name           | Name of the build artifact (e.g., `deepin-calculator`)          | Yes      |
-| version        | Version of the build artifact, four digits recommended (e.g., `5.7.21.0`) | Yes      |
+| version        | Version of the build artifact,  follows [SemVer](./semver.md) specification | Yes      |
 | kind           | Type of the build artifact: `app` (Application), `runtime` (Runtime) | Yes      |
 | description    | Detailed description of the build artifact                      | Yes      |
 | architecture   | Target architecture of the build artifact (e.g., `amd64`, `arm64`) | No       |
